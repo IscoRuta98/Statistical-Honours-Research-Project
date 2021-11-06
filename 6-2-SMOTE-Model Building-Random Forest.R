@@ -1,0 +1,195 @@
+rm(list = ls())
+setwd("~/Honours/THESIS/StatsBomb/Thesis Code")
+
+library(StatsBombR)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(stargazer)
+library(gbm)
+library(ranger)
+library(randomForest)
+library(caret)
+library(DMwR)
+
+# Load  Women Shots & FreezeFrame Data
+load("~/Honours/THESIS/StatsBomb/Thesis Code/Data for Modelling")
+
+# Remove non numeric/factor variables
+rm_vars = c("id","player.name","team.name")
+shots.varsdata = shots.varsdata[,!(names(shots.varsdata) %in% rm_vars)]
+
+# Change factor variables into numeric values
+
+shots.varsdata$play_pattern.name = as.numeric(shots.varsdata$play_pattern.name)   - 1
+shots.varsdata$shot.body_part.name = as.numeric(shots.varsdata$shot.body_part.name) - 1
+shots.varsdata$shot.type.name = as.numeric(shots.varsdata$shot.type.name) - 1
+shots.varsdata$shot.first_time = as.numeric(shots.varsdata$shot.first_time) - 1
+shots.varsdata$shot.technique.name = as.numeric(shots.varsdata$shot.technique.name) - 1
+shots.varsdata$shot.one_on_one = as.numeric(shots.varsdata$shot.one_on_one) - 1
+shots.varsdata$position.name.2 = as.numeric(shots.varsdata$position.name.2) - 1
+shots.varsdata$under_pressure = as.numeric(shots.varsdata$under_pressure) - 1
+
+#### Split Data into Train & Test ####
+set.seed(2020)
+index = sample(1:nrow(shots.varsdata),size = 0.8*nrow(shots.varsdata),replace = F)
+
+train_shots = shots.varsdata[index,]
+test_shots  = shots.varsdata[-index,]
+
+# Change target variable into a factor
+train_shots = as.data.frame(train_shots)
+
+dist_angle = ggplot() +
+  layer(data = train_shots[1:2277,],
+        stat = "identity",
+        geom = "point",
+        mapping = aes(x = DistToGoal, y = AngleToGoal,color = as.factor(is.goal)),
+        position = "identity") + 
+  ggtitle("Distance and Angle of Shots (Before SMOTE)",subtitle = "Source: StatsBomb Open Data") +
+  xlab("Distance to goal (in meters)") +
+  ylab("Angle to goal")
+
+dist_angle + labs(title = "Distance and Angle of Shots (Before SMOTE)",
+                  subtitle = "Source: StatsBomb(2018)",
+                  color = "Shots",caption = "0 = No Goal, 1 = Goal")
+
+
+train_shots$is.goal = as.factor(train_shots$is.goal)
+
+
+set.seed(2020)
+train_shots = SMOTE(is.goal~.,train_shots,perc.over = 60,perc.under = 500)
+prop.table(table(train_shots$is.goal))
+
+
+
+dist_angle = ggplot() +
+  layer(data = train_shots,
+        stat = "identity",
+        geom = "point",
+        mapping = aes(x = DistToGoal, y = AngleToGoal,color = as.factor(is.goal)),
+        position = "identity") + 
+  ggtitle("Distance and Angle of Shots (After SMOTE)",subtitle = "Source: StatsBomb Open Data") +
+  xlab("Distance to goal (in meters)") +
+  ylab("Angle to goal")
+
+dist_angle + labs(title = "Distance and Angle of Shots (After SMOTE)",
+                  subtitle = "Source: StatsBomb(2018)",
+                  color = "Shots",caption = "0 = No Goal, 1 = Goal")
+
+
+#### BASIC MODEL ####
+
+set.seed(2020)
+basic.rf = randomForest(formula = is.goal~location.x+location.y+DistToKeeper+DistToGoal+
+                          AngleToKeeper+AngleToGoal+shot.body_part.name+shot.type.name,
+                        data = train_shots,
+                        ntree = 5000,
+                        importance = TRUE,
+                        do.trace = 500)
+
+# Variable Importance Plot
+varImpPlot(x = basic.rf,sort = TRUE,type = 2)
+var.imp.basic = basic.rf$importance[,4]
+
+rf_basic_varImp = randomForest::importance(basic.rf, type = 2)
+rf_basic_varImp = rf_basic_varImp[order(rf_basic_varImp,decreasing = FALSE)]
+
+par(mar = c(5.1,6,4.1,2.1))
+barplot(rf_basic_varImp, horiz = T, col = 'navy', las = 1,
+        xlab = 'Mean decrease in Gini index', cex.lab = 1.1, cex.axis = 1, 
+        main = 'Random Forest: Basic Model', cex.main = 1.5, cex.names = 0.7,
+        names.arg = c("shot.type.name","shot.body_part.name","AngleToKeeper",
+                      "location.y","location.x","AngleToGoa","DistToKeeper",
+                      "DistToGoal"))
+
+
+pred.basic.rf = predict(object = basic.rf,newdata = test_shots,type = "prob")
+
+# Brier Score
+round(sum((test_shots$is.goal- pred.basic.rf[,2])^2) / nrow(test_shots),5) # 0.14026
+
+# AUC ROC score
+round(AUC(y_pred = pred.basic.rf[,2],y_true = test_shots$is.goal),5) # 0.75218
+
+
+#### COMPLEX MODEL ####
+
+set.seed(2020)
+complex.rf = randomForest(formula = is.goal~location.x+location.y+DistToKeeper+DistToGoal+
+                            AngleToKeeper+AngleToGoal+shot.body_part.name+shot.type.name+
+                            shot.technique.name+play_pattern.name+TimeInPoss+under_pressure+
+                            avevelocity+position.name.2+shot.first_time+shot.one_on_one,
+                          data = train_shots,
+                          ntree = 5000,
+                          importance = TRUE,
+                          do.trace = 500)
+
+# Variable Importance Plot
+varImpPlot(x = complex.rf,sort = TRUE,type = 2)
+var.imp.complex = complex.rf$importance[,4]
+
+rf_complex_varImp = randomForest::importance(complex.rf, type = 2)
+rf_complex_varImp = rf_complex_varImp[order(rf_complex_varImp,decreasing = FALSE)]
+
+par(mar = c(5.1,6,4.1,2.1))
+barplot(rf_complex_varImp, horiz = T, col = 'navy', las = 1,
+        xlab = 'Mean decrease in Gini index', cex.lab = 1.1, cex.axis = 1, 
+        main = 'Random Forest: Complex Model', cex.main = 1.5, cex.names = 0.7,
+        names.arg = c('shot.type.name','shot.one_on_one','under_pressure',
+                      'shot.first_time','shot.body_part.name','shot.technique.name',
+                      'position.name.2','play_pattern.name','AngleToKeeper',
+                      'location.y','AngleToGoal','location.x','TimeInPoss',
+                      'DistToKeeper','avevelocity','DistToGoal'))
+
+pred.complex.rf = predict(object = complex.rf,newdata = test_shots,type = "prob")
+
+# Brier Score
+round(sum((test_shots$is.goal- pred.complex.rf[,2])^2) / nrow(test_shots),5) # 0.12947
+
+# AUC ROC score
+round(AUC(y_pred = pred.complex.rf[,2],y_true = test_shots$is.goal),5) # 0.76881
+
+
+#### SPATIAL-TEMPORAL ####
+
+set.seed(2020)
+spat.rf = randomForest(formula = is.goal~.-shot.statsbomb_xg,
+                       data = train_shots,
+                       ntree = 5000,
+                       importance = TRUE,
+                       do.trace = 500)
+
+
+# Variable Importance Plot
+varImpPlot(x = spat.rf,sort = TRUE,type = 2)
+var.imp.spat = spat.rf$importance[,4]
+
+rf_spat_varImp = randomForest::importance(spat.rf, type = 2)
+rf_spat_varImp = rf_spat_varImp[order(rf_spat_varImp,decreasing = FALSE)]
+
+par(mar = c(4.1,8,4,3.1))
+barplot(rf_spat_varImp, horiz = T, col = 'navy', las = 1,
+        xlab = 'Mean decrease in Gini index', cex.lab = 1.1, cex.axis = 1, 
+        main = 'Random Forest: Spatio-Temporal Model', cex.main = 1.5, cex.names = 0.9,
+        names.arg = c('shot.type.name','shot.one_on_one','under_pressure',
+                      'shot.first_time','shot.body_part.name','shot.technique.name',
+                      'AttackersBehindBall','position.name.2','play_pattern.name',
+                      'DefendersBehindBall','AngleToKeeper','distance.ToD1.360',
+                      'minute','AngleToGoal','location.y','distance.ToD2.360',
+                      'TimeInPoss','location.x','attack_dominance','DistToKeeper',
+                      'avevelocity','DistToGoal'),xlim = c(0,120))
+
+
+pred.spat.rf = predict(object = spat.rf,newdata = test_shots,type = "prob")
+
+# Brier Score
+round(sum((test_shots$is.goal- pred.spat.rf[,2])^2) / nrow(test_shots),5) # 0.12842
+
+# AUC ROC score
+round(AUC(y_pred = pred.spat.rf[,2],y_true = test_shots$is.goal),5) # 0.75901
+
+# Save Enviroment
+save.image("~/Honours/THESIS/StatsBomb/Thesis Code/SMOTE_random_forest_models.RData")
